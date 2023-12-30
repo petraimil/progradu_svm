@@ -1,0 +1,487 @@
+
+import pandas as pd
+import numpy as np
+import re
+import gzip
+import os
+import random
+from collections import Counter
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.feature_selection import chi2
+from sklearn.svm import LinearSVC
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+### This code
+# 1) reads and stores the biarc information from *conllu.gz files into a list of dictionaries while cleaning the values of lexical information
+# 2) saves the values in a table associated with the file name for later use (lexical examples)
+# 3) randomly selects 7500 from each category
+# 4) tokenizes, vectorizes, trains an svm and predicts the results, iterating 100 times and storing the information in *txt files
+# 5) counts 20 most popular features of each category + coefs
+# 6) visualises confusion matrix and iteration performance
+
+# Define the directory path containing the conllu.gz files
+directory_path = 'your_file_path'
+
+# Create an empty list to store dictionaries for non-empty files
+result_list = []
+# crate a table to store the values associated with the file they're extracted from
+filename_content_table = {}
+
+# Iterate through all files in the directory
+for filename in os.listdir(directory_path):
+    # Check if the file is a conllu.gz file
+    if filename.endswith('.conllu.gz'):
+        # Determine the key based on whether 'lahes' or 'melkein' exists in the file name
+        if 'lahes' in filename:
+            key = 'lahes'
+        elif 'melkein' in filename:
+            key = 'melkein'
+        else:
+            # Skip files that don't contain either 'lahes' or 'melkein'
+            continue
+
+        # Create a dictionary to store the results for this file
+        result_dict = {key: []}
+
+        # Define the full path to the current file
+        file_path = os.path.join(directory_path, filename)
+
+        # Open and read the compressed conllu.gz file
+        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+            instances_count = 0
+            # Read and process each line in the file
+            for line in f:
+            
+                # Split the line into columns using tabs
+                columns = line.strip().split('\t')
+
+                # Check if the line is not empty and has the expected number of columns
+                if len(columns) >= 2:
+                    
+                    # Extract and clean the values from the appropriate column
+                    values = [word.split('/')[1:] if '/' in word and not word.endswith('/ROOT') else word for word in columns[1].split()]
+
+                    # Join the cleaned values into a string, handling lists
+                    cleaned_value = ' '.join(['/'.join(value) if isinstance(value, list) else value for value in values])
+
+                    # Add the cleaned value to the result_dict[key]
+                    result_dict[key].append(cleaned_value)
+                    
+
+        # Check if the result_dict has non-empty values
+        if any(result_dict[key]):  # Check if the value associated with the key is not empty
+            # Append the result_dict to the result_list
+            result_list.append(result_dict)
+            # filename & dictionary
+            filename_content_table[filename] = result_dict       
+import pickle
+
+# Save the filename_content_table to a file using pickle
+with open('filename_content_table.pkl', 'wb') as file:
+    pickle.dump(filename_content_table, file)
+    
+
+
+# Count of strings in dictionary values = the amount of biarcs
+string_count = 0
+for item in result_list:
+    for value in item.values():
+        if isinstance(value, str):
+            string_count += 1
+        elif isinstance(value, (list, tuple, dict)):
+            string_count += sum(isinstance(item, str) for item in value)
+
+print("Total number of strings in dictionary values: " + str(string_count))
+
+
+
+    
+
+# uncomment to see bits of the data
+# Print the list of dictionaries for non-empty files
+# print(result_list[:5])
+# print(len(result_list))
+# type(result_list)
+
+# count the examples
+count_lahes = 0
+count_melkein = 0
+
+# Iterate through the list of dictionaries
+for dictionary in result_list:
+    # Check if 'lahes' is a key in the dictionary and it has non-empty values
+    if 'lahes' in dictionary and any(dictionary['lahes']):
+        count_lahes += 1
+
+    # Check if 'melkein' is a key in the dictionary and it has non-empty values
+    if 'melkein' in dictionary and any(dictionary['melkein']):
+        count_melkein += 1
+
+# Print the counts
+print('Count of "lahes":', count_lahes)
+print('Count of "melkein":', count_melkein)
+print('yhteensä: ', count_melkein + count_lahes)
+
+
+
+# method to change the keys into integers (lahes = 0, melkein = 1) and getting rid of the whitespaces in biarcs
+def transform_dict(input_dict):
+    new_dict = {}
+    for key, value in input_dict.items():
+        if key == 'lahes':
+            new_key = '0'
+        elif key == 'melkein':
+            new_key = '1'
+        else:
+            new_key = key  # Keep the original key if it's neither "lahes" nor "melkein"
+        new_values = [s.replace(" ", "") for s in value]
+        new_dict[new_key] = new_values
+    return new_dict
+
+# Transform the dictionaries and create new_result_list
+new_result_list = [transform_dict(d) for d in result_list]
+
+data = new_result_list
+
+list_with_key_1 = [item for item in data if '1' in item]
+list_with_key_0 = [item for item in data if '0' in item]
+
+print(len(list_with_key_0))
+print(len(list_with_key_1))
+
+print(list_with_key_1[:2])
+print(list_with_key_0[:2])
+
+unique_strings = set()
+
+for item in new_result_list:
+    for value in item.values():
+        if isinstance(value, str):
+            unique_strings.add(value)
+        elif isinstance(value, (list, tuple, dict)):
+            unique_strings.update(filter(lambda x: isinstance(x, str), value))
+            
+print(len(unique_strings))
+            
+
+
+# next, randomly choosing equal amount of examples from both labels
+max_instances = 7500
+
+# Check if each list exceeds the maximum instances
+if len(list_with_key_1) > max_instances:
+    # Randomly shuffle and trim the list to the maximum number of instances
+    random.shuffle(list_with_key_1)
+    list_with_key_1 = list_with_key_1[:max_instances]
+
+if len(list_with_key_0) > max_instances:
+    # Randomly shuffle and trim the list to the maximum number of instances
+    random.shuffle(list_with_key_0)
+    list_with_key_0 = list_with_key_0[:max_instances]
+
+print(len(list_with_key_1))
+print(len(list_with_key_0))
+
+new_result_list = list_with_key_1 + list_with_key_0
+print(new_result_list[:10])
+random.shuffle(new_result_list)
+
+# counts the amount of biarcs in data
+
+string_count = 0
+for item in new_result_list:
+    for value in item.values():
+        if isinstance(value, str):
+            string_count += 1
+        elif isinstance(value, (list, tuple, dict)):
+            string_count += sum(isinstance(item, str) for item in value)
+
+print("Total number of strings in selected dictionary values: " + str(string_count))
+
+unique_strings = set()
+
+for item in new_result_list:
+    for value in item.values():
+        if isinstance(value, str):
+            unique_strings.add(value)
+        elif isinstance(value, (list, tuple, dict)):
+            unique_strings.update(filter(lambda x: isinstance(x, str), value))
+            
+            
+
+print("Total number of unique strings in selected dictionary values: " + str(len(unique_strings)))
+
+from collections import defaultdict
+
+# Dictionary to store occurrences of strings
+string_occurrences = defaultdict(int)
+
+# Count occurrences of strings
+for item in new_result_list:
+    for value in item.values():
+        if isinstance(value, str):
+            string_occurrences[value] += 1
+        elif isinstance(value, (list, tuple, dict)):
+            for item in value:
+                if isinstance(item, str):
+                    string_occurrences[item] += 1
+
+# Count values that occur only once
+values_occurring_once = sum(1 for count in string_occurrences.values() if count > 5)
+
+print("Total number of values occurring only once among strings: " + str(values_occurring_once))
+print("Strings occuring more than 5 times: ", len(unique_strings) - values_occurring_once)
+
+
+# print(new_result_list[:5])
+
+def custom_tokenizer(txt):
+    # whitespace tokenizer
+    return txt.split(" ")
+
+labels = []
+features = []
+
+# Concatenate the tokens within each dictionary value into a single string
+for item in new_result_list:
+    for label, token_list in item.items():
+        labels.append(label)
+        feature_string = ' '.join(token_list)  # Join tokens with whitespace
+        features.append(feature_string)
+
+# tokenizing
+tokenized_features = [custom_tokenizer(feature) for feature in features]
+
+# Define the number of iterations
+num_iterations = 100
+
+# Placeholder for accuracy scores
+accuracy_scores = []
+
+classification_reports = []
+
+# Placeholder for top features from all iterations
+all_top_features = []
+top_features_by_label_count_0 = []
+top_features_by_label_count_1 = []
+all_feature_coefs = []
+
+for i in range(num_iterations):
+    # Shuffle and split the data into train and test sets
+    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=i, stratify=labels)
+        
+    # define vectorizer
+    tfidf_vectorizer = TfidfVectorizer(tokenizer=custom_tokenizer, lowercase=False, max_features=10000)
+    # Transform your tokenized text data into TF-IDF vectors
+    X_train_tfidf = tfidf_vectorizer.fit_transform(X_train)
+    X_test_tfidf = tfidf_vectorizer.transform(X_test)
+
+    feature_names = tfidf_vectorizer.get_feature_names()
+
+    # Feature Selection with Chi-squared (chi2)
+    chi2_stat, p_values = chi2(X_train_tfidf, y_train)
+
+    # Create a DataFrame to store chi2 statistics and p-values for each feature
+    feature_selection_results = pd.DataFrame({
+        'Feature': feature_names,
+        'Chi2': chi2_stat,
+        'p-value': p_values
+    })
+
+    # Sort the features by chi2 statistic in descending order
+    feature_selection_results = feature_selection_results.sort_values(by='Chi2', ascending=False)
+
+    # Uncomment if you want to print the chi2 top features
+    # Print the top features based on chi2 statistic
+    # print("Top Features (based on chi2 statistic):")
+    # print(feature_selection_results.head(10))
+
+    # Initialize the SVM classifier (you can choose different kernel and parameters as needed)
+    clf = LinearSVC(C=0.05, tol=0.00001)
+
+    # Train the SVM classifier
+    clf.fit(X_train_tfidf, y_train)
+
+    # store weights assigned to different features
+    coef_array = clf.coef_
+    
+    # predictions
+    y_pred = clf.predict(X_test_tfidf)
+
+    # Store feature names and coefficients in a DataFrame
+    feature_coef_df = pd.DataFrame({
+        'Feature': feature_names,
+        'Coef': coef_array[0]
+    })
+    
+    all_feature_coefs.append(feature_coef_df)
+
+
+    # Sort the features by coefficient magnitude for each label
+    top_features_label_0 = feature_coef_df[feature_coef_df['Coef'] > 0].sort_values(by='Coef', ascending=False).head(50)
+    top_features_label_1 = feature_coef_df[feature_coef_df['Coef'] < 0].sort_values(by='Coef', ascending=True).head(50)
+    
+    # store features in the lists for both labels separately
+    top_features_list_0 = top_features_label_0['Feature'].tolist()
+    top_features_list_1 = top_features_label_1['Feature'].tolist()
+
+    # Extend the lists
+    top_features_by_label_count_0.extend(top_features_list_0)
+    top_features_by_label_count_1.extend(top_features_list_1)
+    
+    # confusion matrix
+    conf_matrix = confusion_matrix(y_test, y_pred)
+    
+    # Store accuracy score for this iteration
+    accuracy = clf.score(X_test_tfidf, y_test)
+    classification_rep = classification_report(y_test, y_pred)
+    conf_matrix_output = "Confusion Matrix:\n" + str(conf_matrix)
+
+    
+
+    accuracy_scores.append(accuracy)
+    classification_reports.append(classification_rep)
+    
+    # Store top features for each label in this iteration
+    all_top_features.append((top_features_label_0, top_features_label_1))
+    
+    output_directory = "/home/plahde/aineisto/aineisto/tulokset/"
+    
+    # Save results to a file after each iteration
+    with open(output_directory + "TOL10voc_10000_non_bal_results_iteration_tol10" + str(i + 1) + ".txt", "w") as file:
+        file.write("Iteration " + str(i + 1) + "\n")
+        file.write("Accuracy: " + str(accuracy) + "\n")
+        file.write("Classification Report:\n")
+        file.write(classification_rep + "\n")    
+        file.write(conf_matrix_output + "\n")
+
+        file.write("Top Features for Label 'lähes = 0':\n" + top_features_label_0.to_string() + "\n")
+        file.write("Top Features for Label 'melkein = 1':\n" + top_features_label_1.to_string() + "\n")
+
+from collections import Counter
+
+# Count occurrences of each element
+counted_0 = Counter(top_features_by_label_count_0)
+counted_1 = Counter(top_features_by_label_count_1)
+
+
+# Sort elements by their frequency in descending order
+top_20_0 = sorted(counted_0.items(), key=lambda x: x[1], reverse=True)
+top_20_1 = sorted(counted_1.items(), key=lambda x: x[1], reverse=True)
+
+output_directory = "/home/plahde/aineisto/aineisto/tulokset/"
+
+
+# Print values in descending order of frequency
+with open(output_directory + 'TOL10voc_10000_top_20_feats_tolx10.txt', 'w') as file:
+    file.write("Top 20 features for category 0 non_bal:\n")
+    for value, count in top_20_0:
+        print(str(value) + ": " + str(count) + " times")
+        file.write(str(value) + ": " + str(count) + " times\n")
+    
+    file.write("\nTop 20 features for category 1 non_bal:\n")
+    for value, count in top_20_1:
+        print(str(value) + ": " + str(count) + " times")
+        file.write(str(value) + ": " + str(count) + " times\n")
+
+aggregated_coef_df = pd.concat(all_feature_coefs).groupby('Feature').mean().reset_index()
+aggregated_coef_df = aggregated_coef_df.sort_values(by='Coef', ascending=False)
+
+# Count occurrences of each feature for both labels across all iterations
+for coef_df in all_feature_coefs:
+    top_features_label_0 = coef_df[coef_df['Coef'] > 0]['Feature'].tolist()
+    top_features_label_1 = coef_df[coef_df['Coef'] < 0]['Feature'].tolist()
+
+    top_features_by_label_count_0.extend(top_features_label_0)
+    top_features_by_label_count_1.extend(top_features_label_1)
+
+# Get top 20 features for each label
+counted_0 = Counter(top_features_by_label_count_0)
+counted_1 = Counter(top_features_by_label_count_1)
+top_20_0 = counted_0.most_common(20)
+top_20_1 = counted_1.most_common(20)
+
+# Write the top 20 features and aggregated coefficients to a file
+output_directory = "/home/plahde/aineisto/aineisto/tulokset/"
+
+with open(output_directory + 'TOL10voc_10000_top_20_feats_with_coefs_tolx10.txt', 'w') as file:
+    file.write("Top 20 features for category 0 non_bal with Coefficients:\n")
+    for feature, count in top_20_0:
+        coef_value = aggregated_coef_df[aggregated_coef_df['Feature'] == feature]['Coef'].values[0]
+        file.write(feature + ": " + str(count) + " times (Average Coef: " + str(coef_value) + ")\n")
+    
+    file.write("\nTop 20 features for category 1 non_bal with Coefficients:\n")
+    for feature, count in top_20_1:
+        coef_value = aggregated_coef_df[aggregated_coef_df['Feature'] == feature]['Coef'].values[0]
+        file.write(feature + ": " + str(count) + " times (Average Coef: " + str(coef_value) + ")\n")
+
+
+# visualisations
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
+import numpy as np
+
+plt.figure()
+y = np.sort(clf.coef_[0])
+plt.plot(y)
+plt.savefig('TOL10plot1tol10.png')  # Save as PNG file
+plt.close()
+
+plt.figure()
+y = np.sort(clf.coef_[0])
+plt.plot(y[:1000])
+plt.savefig('TOL10plot2tol10.png')  # Save as PNG file
+plt.close()
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Visualizing Confusion Matrix
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_matrix, annot=True, cmap='Blues', fmt='d')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.savefig('TOL10confusion_matrix:tol10.png')  # Save as PNG file
+
+# Visualizing Accuracy Scores Over Iterations
+plt.figure(figsize=(8, 6))
+plt.plot(range(len(accuracy_scores)), accuracy_scores, marker='o')
+plt.xlabel('Iteration')
+plt.ylabel('Accuracy')
+plt.title('Accuracy Scores Over Iterations')
+plt.savefig('TOL10accuracy_scores_tol10.png')  # Save as PNG file
+
+# Visualizing Precision, Recall, and F1-score Bar Plot
+report_data = classification_rep.split('\n')
+report_data = [row.split() for row in report_data[2:-5]]
+class_labels = [row[0] for row in report_data]
+precision = [float(row[1]) for row in report_data]
+recall = [float(row[2]) for row in report_data]
+f1_score = [float(row[3]) for row in report_data]
+
+data = {'precision': precision, 'recall': recall, 'f1-score': f1_score}
+df = pd.DataFrame(data, index=class_labels)
+
+plt.figure(figsize=(10, 6))
+df.plot(kind='bar')
+plt.title('Precision, Recall, and F1-score for each class')
+plt.xlabel('Class')
+plt.ylabel('Score')
+plt.legend(title='Metrics')
+plt.savefig('precision_recall_f1_tol10.png')  # Save as PNG file
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Visualizing Confusion Matrix
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_matrix, annot=True, cmap='Blues', fmt='d')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.savefig('TOL10confusion_matrix:tol10.png')  # Save as PNG file
